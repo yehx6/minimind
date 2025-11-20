@@ -10,7 +10,65 @@ from typing import Optional, Tuple, List, Union
 
 
 class MiniMindConfig(PretrainedConfig):
-    pass
+    model_type = "minimind"
+
+    def __init__(
+        self,
+        dropout: float = 0.0,
+        bos_token_id: int = 1,
+        eos_token_id: int = 2,
+        hidden_act: str = "silu",
+        hidden_size: int = 512,
+        intermediate_size: int = None,
+        max_position_embeddings: int = 32768,
+        num_attention_heads: int = 8,
+        num_hidden_layers: int = 8,
+        num_key_value_heads: int = 2,
+        vocab_size: int = 6400,
+        rms_norm_eps: float = 1e-5,
+        rope_theta: float = 1000000.0,
+        inference_rope_scaling: bool = False,
+        flash_attn: bool = True,
+        use_moe: bool = False,
+        num_expert_per_tok: int = 2,
+        n_routed_experts: int = 4,
+        n_shared_experts: int = 1,
+        scoring_func: str = "softmax",
+        aux_loss_alpha: float = 0.1,
+        seq_aux: bool = True,
+        norm_topk_prob: bool = True,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.dropout = dropout
+        self.bos_token_id = bos_token_id
+        self.eos_token_id = eos_token_id
+        self.hidden_act = hidden_act
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.max_position_embeddings = max_position_embeddings
+        self.num_attention_heads = num_attention_heads
+        self.num_hidden_layers = num_hidden_layers
+        self.num_key_value_heads = num_key_value_heads
+        self.vocab_size = vocab_size
+        self.rms_norm_eps = rms_norm_eps
+        self.rope_base = rope_theta
+        self.inference_rope_scaling = inference_rope_scaling
+
+        self.rope_scaling = (
+            {"beta_fast": 4.0, "beta_slow": 1.0, "factor": 4, "original_max_position_embeddings": 2048, "type": "yarn"}
+            if inference_rope_scaling
+            else None
+        )
+        self.flash_attn = flash_attn
+        self.use_moe = use_moe
+        self.num_expert_per_tok = num_expert_per_tok
+        self.n_routed_experts = n_routed_experts
+        self.n_shared_experts = n_shared_experts
+        self.scoring_func = scoring_func
+        self.aux_loss_alpha = aux_loss_alpha
+        self.seq_aux = seq_aux
+        self.norm_topk_prob = norm_topk_prob
 
 
 # rmsnorm
@@ -296,7 +354,7 @@ class MiniMindModel(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[torch.Tensor]] = None,
         use_cache: bool = False,
-        **kwargs
+        **kwargs,
     ):
 
         batch_size, seq_length = input_ids.shape
@@ -331,5 +389,23 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
         self.model.embed_tokens.weight = self.lm_head.weight
         self.OUT = CausalLMOutputWithPast()
 
-    def forward():
-        pass
+    def forward(
+        self,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_values: Optional[List[torch.Tensor]] = None,
+        use_cache: bool = False,
+        logits_to_keep: Optional[int] = None,
+        **args,
+    ):
+        h, past_kvs, aux_loss = self.model(
+            input_ids=input_ids, attention_mask=attention_mask, past_key_values=past_key_values, use_cache=use_cache, **args
+        )
+
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        logits = self.lm_head(h[:, slice_indices, :])
+        self.OUT.__setitem__("last_hidden_state", h)
+        self.OUT.__setitem__("logits", logits)
+        self.OUT.__setitem__("aux_loss", aux_loss)
+        self.OUT.__setitem__("past_key_values", past_kvs)
+        return self.OUT
